@@ -2367,7 +2367,7 @@ class TestS3PresignedUrl:
         presign_url = presign_url.replace(f":{port1}", f":{port2}")
 
         response = requests.get(presign_url)
-        assert b"test-value" == response._content
+        assert b"test-value" == response.content
 
     @pytest.mark.aws_validated
     @pytest.mark.skip_snapshot_verify(
