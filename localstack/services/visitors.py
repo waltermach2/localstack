@@ -1,10 +1,10 @@
+import importlib
 import logging
 from functools import singledispatchmethod
 from typing import Any, Dict, Protocol, TypedDict, runtime_checkable
 
 from localstack_ext.plugins import api_key_configured
 from moto.core.utils import BackendDict
-import importlib
 
 from localstack.services.stores import AccountRegionBundle
 
@@ -99,7 +99,9 @@ class ReflectionStateLocator:
         attribute = _load_attribute_from_module(module_name, attribute_name)
         if attribute is None and is_ext:
             # if an ext module can't be found, we look for a community one
-            attribute = _load_attribute_from_module(f"localstack.services.{service}.models", attribute_name)
+            attribute = _load_attribute_from_module(
+                f"localstack.services.{service}.models", attribute_name
+            )
 
         if attribute:
             visitor.visit(attribute)
@@ -111,4 +113,3 @@ class ReflectionStateLocator:
 
         if attribute:
             visitor.visit(attribute)
-
