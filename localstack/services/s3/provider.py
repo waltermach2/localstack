@@ -21,6 +21,7 @@ from localstack.aws.api.s3 import (
     ContentMD5,
     CopyObjectOutput,
     CopyObjectRequest,
+    CORSConfiguration,
     CreateBucketOutput,
     CreateBucketRequest,
     Delete,
@@ -31,6 +32,7 @@ from localstack.aws.api.s3 import (
     DeleteResult,
     ETag,
     GetBucketAclOutput,
+    GetBucketCorsOutput,
     GetBucketLifecycleConfigurationOutput,
     GetBucketLifecycleOutput,
     GetBucketLocationOutput,
@@ -78,11 +80,16 @@ from localstack.aws.api.s3 import (
 )
 from localstack.aws.api.s3 import Type as GranteeType
 from localstack.aws.api.s3 import WebsiteConfiguration
-from localstack.aws.handlers import modify_service_response, serve_custom_service_request_handlers
+from localstack.aws.handlers import (
+    modify_service_response,
+    preprocess_request,
+    serve_custom_service_request_handlers,
+)
 from localstack.constants import LOCALHOST_HOSTNAME
 from localstack.services.edge import ROUTER
 from localstack.services.moto import call_moto
 from localstack.services.plugins import ServiceLifecycleHook
+from localstack.services.s3.cors import S3CorsHandler
 from localstack.services.s3.models import S3Store, get_moto_s3_backend, s3_stores
 from localstack.services.s3.notifications import NotificationDispatcher, S3EventNotificationContext
 from localstack.services.s3.presigned_url import (
@@ -156,16 +163,19 @@ class S3Provider(S3Api, ServiceLifecycleHook):
         store = self.get_store()
         store.bucket_lifecycle_configuration.pop(bucket, None)
         store.bucket_versioning_status.pop(bucket, None)
+        store.bucket_cors.pop(bucket, None)
 
     def on_after_init(self):
         apply_moto_patches()
         register_virtual_host_routes(router=ROUTER)
         register_website_hosting_routes(router=ROUTER)
         register_custom_handlers()
+        preprocess_request.append(self._cors_handler)
 
     def __init__(self) -> None:
         super().__init__()
         self._notification_dispatcher = NotificationDispatcher()
+        self._cors_handler = S3CorsHandler()
 
     def on_before_stop(self):
         self._notification_dispatcher.shutdown()
@@ -212,6 +222,7 @@ class S3Provider(S3Api, ServiceLifecycleHook):
                 response["Location"] = get_full_default_bucket_location(bucket_name)
         if "Location" not in response:
             response["Location"] = f"/{bucket_name}"
+        self._cors_handler.invalidate_cache()
         return response
 
     def delete_bucket(
@@ -219,6 +230,7 @@ class S3Provider(S3Api, ServiceLifecycleHook):
     ) -> None:
         call_moto(context)
         self._clear_bucket_from_store(bucket)
+        self._cors_handler.invalidate_cache()
 
     def get_bucket_location(
         self, context: RequestContext, bucket: BucketName, expected_bucket_owner: AccountId = None
@@ -585,6 +597,38 @@ class S3Provider(S3Api, ServiceLifecycleHook):
         store = self.get_store()
         store.bucket_lifecycle_configuration.pop(bucket, None)
 
+    def put_bucket_cors(
+        self,
+        context: RequestContext,
+        bucket: BucketName,
+        cors_configuration: CORSConfiguration,
+        content_md5: ContentMD5 = None,
+        checksum_algorithm: ChecksumAlgorithm = None,
+        expected_bucket_owner: AccountId = None,
+    ) -> None:
+        response = call_moto(context)
+        # max 100 rules
+        # validate CORS? see moto
+        self.get_store().bucket_cors[bucket] = cors_configuration
+        self._cors_handler.invalidate_cache()
+        return response
+
+    def get_bucket_cors(
+        self, context: RequestContext, bucket: BucketName, expected_bucket_owner: AccountId = None
+    ) -> GetBucketCorsOutput:
+        response = call_moto(context)
+        self.get_store().bucket_cors.get(bucket)
+        # TODO: see here what to do
+        return response
+
+    def delete_bucket_cors(
+        self, context: RequestContext, bucket: BucketName, expected_bucket_owner: AccountId = None
+    ) -> None:
+        response = call_moto(context)
+        if self.get_store().bucket_cors.pop(bucket, None):
+            self._cors_handler.invalidate_cache()
+        return response
+
     def get_bucket_acl(
         self, context: RequestContext, bucket: BucketName, expected_bucket_owner: AccountId = None
     ) -> GetBucketAclOutput:
@@ -807,6 +851,8 @@ def validate_bucket_name(bucket: BucketName) -> None:
     Validate s3 bucket name based on the documentation
     ref. https://docs.aws.amazon.com/AmazonS3/latest/userguide/bucketnamingrules.html
     """
+    # TODO: think about not allowing specific bucket name in path addressed mode?
+    #  /health, /_localstack, /_aws ?
     if not is_bucket_name_valid(bucket_name=bucket):
         ex = InvalidBucketName("The specified bucket is not valid.")
         ex.BucketName = bucket
