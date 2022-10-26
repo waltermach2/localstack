@@ -188,3 +188,23 @@ def test_list_events_after_deployment(cfn_client, deploy_cfn_template, snapshot)
     )
     response = cfn_client.describe_stack_events(StackName=stack.stack_name)
     snapshot.match("events", response)
+
+
+def test_drift_detection_on_lambda(deploy_cfn_template, cfn_client, lambda_client, snapshot):
+    snapshot.add_transformer(snapshot.transform.cloudformation_api())
+    stack = deploy_cfn_template(
+        template_path=os.path.join(os.path.dirname(__file__), "../../templates/lambda_url.yaml")
+    )
+
+    lambda_client.update_function_configuration(
+        FunctionName=stack.outputs["LambdaName"],
+        Runtime="python3.8",
+        Description="different description",
+        Environment={"Variables": {"ENDPOINT_URL": "localhost.localstack.cloud"}},
+    )
+
+    drift_detection = cfn_client.detect_stack_resource_drift(
+        StackName=stack.stack_name, LogicalResourceId="Function76856677"
+    )
+
+    snapshot.match("drift_detection", drift_detection)
